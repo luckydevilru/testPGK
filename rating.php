@@ -8,7 +8,12 @@ use \Bitrix\Main\Grid\Options as GridOptions;
 use \Bitrix\Main\UI\PageNavigation;
 use \Bitrix\Main\Page\Asset;
 use \Bitrix\Main\UserTable;
- 
+
+// CModule::IncludeModule("timeman");
+CModule::IncludeModule("main");
+
+Asset::getInstance()->addString('<style>.grayExt{color: #ccc;margin-left: auto;}.flex{display:flex;}</style>');
+Asset::getInstance()->addCss('/bitrix/css/main/grid/webform-button.css');
 
 $list_id = 'rating_report';
 $userList = [];
@@ -31,92 +36,87 @@ $nav->allowAllRecords(false)
 $offset = $limit = '';
 
 // фильтр обработка данных вводимых пользователем
-if (!empty($filterData)) {
-    foreach ($filterData as $k => $v) {
-        if ($k == 'FIND' && !empty($v)) {
-            $dateArr['NAME'] = "%" . $v . "%";
-        } elseif ($k == 'UF_DEPARTMENT' && !empty($v)) {
-            $filter['UF_DEPARTMENT'] = $v;
-        } elseif ($k == 'UF_DEPARTMENT' && empty($v)) {
-            $filter['!=UF_DEPARTMENT'] = false;
-        } elseif ($k == 'CREATED_from' && !empty($v)) {
-            $dates['DATE_FROM'] = "AND CREATED >= '" . date("Y-m-d 00:00:00", strtotime($v)) . "' ";
-        } elseif ($k == 'CREATED_to' && !empty($v)) {
-            $dates['DATE_TO'] = "AND CREATED <= '" . date("Y-m-d 23:59:59", strtotime($v)) . "' ";
-        }
+foreach ($filterData as $k => $v) {
+    if ($k == 'FIND' && !empty($v)) {
+        $dateArr['NAME'] = "%" . $v . "%";
+    } elseif ($k == 'UF_DEPARTMENT' && !empty($v)) {
+        $where .= " AND DEPARTMENTS.VALUE_INT=" . $v;
+    } elseif ($k == 'CREATED_from' && !empty($v)) {
+        $dates['DATE_FROM'] = "AND CREATED >= '" . date("Y-m-d 00:00:00", strtotime($v)) . "' ";
+    } elseif ($k == 'CREATED_to' && !empty($v)) {
+        $dates['DATE_TO'] = "AND CREATED <= '" . date("Y-m-d 23:59:59", strtotime($v)) . "' ";
     }
-} else {
-    $filter['!=UF_DEPARTMENT'] = false;
 }
 
 foreach ($dates as $key => $value) {
     $where .= $value;
 }
 if (!empty($nav->getOffset())) {
-    $offset = " OFFSET ".$nav->getOffset()." ";
+    $offset = " OFFSET " . $nav->getOffset() . " ";
 }
 if (!empty($nav->getLimit())) {
-    $limit = " LIMIT ".$nav->getLimit()." ";
+    $limit = " LIMIT " . $nav->getLimit() . " ";
 }
 
 // получаем рейтинги фильтрация по датам
-$sql = "SELECT OWNER_ID, SUM(TOTAL_VOTES) as RATING
-    FROM b_rating_voting 
-    WHERE TOTAL_VOTES > 0 " . $where . "
+$sql = "SELECT OWNER_ID AS USER_ID, CREATED, CONCAT(USER.NAME, ' ', USER.LAST_NAME) as FULL_NAME, 
+        DEPARTMENTS.VALUE_INT AS DEPARTMENT_ID,
+        DEPARTMENT_NAME.NAME AS DEPARTMENTS_NAME, 
+        (SELECT COUNT(*) FROM b_rating_vote WHERE OWNER_ID = USER.ID) AS RATING
+    FROM b_rating_vote THANKS
+        right JOIN b_user USER ON THANKS.OWNER_ID = USER.ID
+        right JOIN b_utm_user DEPARTMENTS ON USER.ID = DEPARTMENTS.VALUE_ID
+        right JOIN b_iblock_section DEPARTMENT_NAME ON DEPARTMENT_NAME.ID = DEPARTMENTS.VALUE_INT 
+    WHERE THANKS.OWNER_ID > 0 $where
     GROUP BY OWNER_ID
     ORDER BY RATING DESC
-    $limit
-    $offset
-    ";
-$res = $DB->query($sql);
-while ($thanks = $res->fetch()) {
-    $userList[$thanks["OWNER_ID"]]["RATING"] = $thanks["RATING"];
-} 
+";
+$sqlFull = $sql . $limit . $offset;
 
-// для расчета постарничной навигации 
-$sql = "SELECT COUNT(*) as CNT FROM b_rating_voting WHERE TOTAL_VOTES > 0 " . $where . " GROUP BY OWNER_ID";
+$res = $DB->query($sqlFull);
+while ($rating = $res->fetch()) {
+    $userList[] = $rating;
+}
+
+
+// для расчета постарничной навигации
 $total_user_count = $DB->query($sql)->SelectedRowsCount();
 $nav->setRecordCount($total_user_count);
 
-$filter["ID"] = array_keys($userList);  
-
-// получаем список пользователей
-$userData = UserTable::getList(array(
-    "select" => ["ID", "NAME", "LAST_NAME"],
-    "filter" => $filter,
-    'count_total' => true
-));
-while($user = $userData->fetch()) { 
-    $printUsers[$user['ID']]['FULL_NAME'] = $user["NAME"] . " " . $user["LAST_NAME"];
-} 
-
-
-// обработка полученных данных
-foreach ($userList as $key => $value) {
-    if (!empty($printUsers[$key])) {
-        $printUsers[$key]['RATING'] = $value['RATING'];
-    }
-} 
-$byRating  = array_column($printUsers, 'RATING'); 
-array_multisort($byRating, SORT_DESC, $printUsers);
-// array_multisort($RATING, SORT_DESC, $FULL_NAME, SORT_ASC, $printUsers);
-
-
-// поля поиска/фильтра для заполнения пользователем
-$ui_filter = [
-    ['id' => 'UF_DEPARTMENT', 'name' => 'Департамент', 'type' => 'text', 'default' => true],
-    ['id' => 'CREATED', 'name' => 'Дата создания', 'type' => 'date', 'default' => true]
-];
 ?>
     <div>
-        <? 
+        <?php
+        // поля поиска/фильтра для заполнения пользователем
+        $sql = "SELECT ID, NAME
+            FROM b_iblock_section 
+            WHERE IBLOCK_ID = 3
+            ORDER BY NAME ASC
+        ";
+        $res = $DB->query($sql);
+        while ($field = $res->fetch()) {
+            $fieldList[$field["ID"]] = $field["NAME"];
+        }
+        // echo '<pre>$fieldList<br />'; print_r($fieldList); echo '</pre>';
+
+        $ui_filter = [
+            [
+                'id' => 'UF_DEPARTMENT',
+                'name' => 'Департамент',
+                'type' => 'list',
+                'default' => true,
+                "items" => $fieldList
+            ],
+            ['id' => 'CREATED', 'name' => 'Дата создания', 'type' => 'date', 'default' => true]
+        ];
+
         // компонента для вывода фильтра/поиска
         $APPLICATION->IncludeComponent('bitrix:main.ui.filter', '', [
             'FILTER_ID' => $list_id,
             'GRID_ID' => $list_id,
             'FILTER' => $ui_filter,
             'ENABLE_LIVE_SEARCH' => false,
-            'ENABLE_LABEL' => true
+            'ENABLE_LABEL' => true,
+            'ENABLE_FIELDS_SEARCH' => true
         ]); ?>
     </div>
     <div style="clear: both;"></div>
@@ -129,11 +129,10 @@ $columns[] = ['id' => 'UF_DEPARTMENT', 'name' => 'Сотрудник', 'sort' =>
 $columns[] = ['id' => 'RATING', 'name' => 'Рейтинг', 'sort' => 'ID', 'default' => true];
 
 // фомримирование ячеек таблицы
-foreach ($printUsers as $key => $row) {
-    $name = $row["FULL_NAME"];
+foreach ($userList as $row) {
     $list[] = [
         'data' => [
-            "UF_DEPARTMENT" => '<a href="https://dev-bx24.wtcmoscow.ru/company/personal/user/'.$key.'/">'.$name.'</a>',
+            "UF_DEPARTMENT" => '<a href="https://dev-bx24.wtcmoscow.ru/company/personal/user/' . $row["USER_ID"] . '/">' . $row["FULL_NAME"] . '</a>',
             "RATING" => $row['RATING']
         ]
     ];
